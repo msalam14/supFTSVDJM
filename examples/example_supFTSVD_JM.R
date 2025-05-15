@@ -1,5 +1,6 @@
 # Number of subjects
 n<-500
+
 # feature dimension
 pdim<-c(200)
 # No of rank-1 components
