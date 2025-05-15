@@ -1,14 +1,13 @@
 # Number of subjects
 n<-500
-# feature dimension 
+# feature dimension
 pdim<-c(200)
-
 # No of rank-1 components
 r<-3
 model_rank<-r
 
 # Weight for components
-lmd_val<-c(5.20,4.80,3.35) 
+lmd_val<-c(5.20,4.80,3.35)
 
 # noise variance in tensor
 Tau2<-c(0.1)
@@ -42,13 +41,13 @@ CmpV<-Reduce(`+`,lapply(1:r,function(k){cmp_var[k]*(outer(bval[,k],PhiF[,k]))^2}
 
 
 # Survival parameters
-alp_par<-matrix(c(3.50,2.60,-0.15,-0.20,0.15),ncol=1) 
+alp_par<-matrix(c(3.50,2.60,-0.15,-0.20,0.15),ncol=1)
 lmd<-0.10
 ## Subject-specific covariates # ADAS13
-set.seed(n) 
+set.seed(n)
 Vmat<<-cbind(round(runif(n),2),round(rbeta(n,2.5,1.5),2))
 EAval<-Vmat%*%gam_par
-miv_subE<-sapply(Eta2,function(u){rnorm(n,mean=0,sd=sqrt(u))}) 
+miv_subE<-sapply(Eta2,function(u){rnorm(n,mean=0,sd=sqrt(u))})
 ZetaSL<-EAval+miv_subE
 
 # Training data set
@@ -78,7 +77,7 @@ gen_dataCFS<-omics_data_gen_surv(m_i = m_i,Zeta= ZetaSL,obsTIME = tr_obsTIME,Xi 
                                  PsiF = PhiFunc,sing_val = lmd_val,Data_Var = Tau2,surv_time=survT)
 
 
-fit_model<-supFTSVD_JM(datlist = gen_dataCFS$data, 
+fit_model<-supFTSVD_JM(datlist = gen_dataCFS$data,
                        response=Vmat, interval = c(0,1), r = model_rank,resolution=50, CVPhi=TRUE, K=5, cvT=5, smooth=round(exp(seq(-7,5,length.out=20)),3),
                        surv_time=survT,
                        censor_status=cenI,
