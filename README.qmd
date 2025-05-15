@@ -1,0 +1,608 @@
+---
+title: "supFTSVD_JM Vignette"
+format: gfm
+bibliography: "inst/references_jm_hdfd_svt.bib"
+---
+
+# Introduction
+
+This R package is built for implementing supFTSVD-JM proposed for joint modeling of high-dimensional longitudinal and time-to-event data. For methodological details, we recommend to read Alam and Luo (202x). Note that the package is still in developing stage.
+
+# Installation
+
+To install the package, run the following codes
+
+```{r}
+#| eval: false
+#| warning: false
+#| message: false
+devtools::install_github("https://github.com/msalam14/supFTSVD_JM")
+```
+
+# DTI data analysis
+
+This document demonstrate the analysis of diffusion tensor imaging (DTI) study data; particularly, the codes used and the results obtained. However, due to confidentiality, the data set is not shared in this demonstration. Instead, we use the partial data available in the *refund* package [@greven2010longitudinal]. Due to unavailability, we discuss everything here without the baseline age data.
+
+-   First call the required packages
+
+```{r}
+#| warning: false
+#| message: false
+library(sLFDA)
+library(refund)
+library(fda)
+library(mgcv)
+library(sn)
+library(tidyverse)
+library(dplyr)
+library(ggpubr)
+library(ggplot2)
+library(gridExtra)
+library(plotly)
+library(parallel)
+library(doParallel)
+library(foreach)
+library(doRNG)
+```
+
+-   Data pre-processing
+
+```{r}
+data(DTI,package="refund") # loading DTI data
+DTI<-DTI %>%
+  filter(case==1) # selection of MS patients only
+ss_cca<-1:93/93 # conversion of tract locations to be in [0,1]
+dti_OT<-DTI$visit.time/max(DTI$visit.time) # conversion of visit time to be in [0,1]
+dtiYR<-round(DTI$visit.time/365,2) # visit time in year
+```
+
+-   There are few FA profiles for which, we do not have FA values for all $93$ locations. We fit a spline smoothing for those FA profiles to impute the missing values.
+
+```{r}
+misINFO<-which(is.na(DTI$cca),arr.ind = TRUE)
+misFA<-split(misINFO[,2],misINFO[,1])
+misFP<-as.numeric(names(misFA))
+misTRCT<-lapply(misFA,as.numeric)
+yDTI<-DTI$cca
+for(i in seq_len(length(misTRCT))){
+  y<-yDTI[misFP[i],-misTRCT[[i]]]
+  x<-ss_cca[-misTRCT[[i]]]
+  x_new<-ss_cca[misTRCT[[i]]]
+  y_new<-spline(x=x,y=y,xout=x_new,method = "natural")$y
+  DTI$cca[misFP[i],misTRCT[[i]]]<-y_new
+}
+```
+
+-   Original DTI data has patients' ID starting from $1001$. We convert them to $1,2,\ldots$
+
+```{r}
+# Construction of patient ID starting from 1
+dti_ID<-NULL
+dti_ID[1]<-1
+for(i in 2:nrow(DTI)){
+  a<-ifelse((DTI$ID[i]-DTI$ID[(i-1)])!=0,dti_ID[(i-1)]+1,dti_ID[(i-1)])
+  dti_ID[i]<-a
+}
+```
+
+-   Creating a meta data frame for MS patients
+
+```{r}
+ms_meta<-data.frame("ID"=dti_ID,
+                    "ObsTime"=dtiYR)
+```
+
+-   The distribution of observed time points
+
+```{r}
+ms_meta %>%
+  ggplot(aes(ObsTime)) +
+  geom_histogram(bins = 10) +
+  ggtitle("Distribution of time points where FA profiles were emasured for different MS patients.")
+```
+
+-   Grid selection in the time domain
+
+```{r}
+ntp<-20 # choice of B
+tp<-round(matrix(seq(0,1,length.out = ntp),ncol=1),2) # equally spaced grid of length B
+Tg<-seq(0,max(DTI$visit.time),5)/max(DTI$visit.time) # grid where population level functions will be estimated
+```
+
+-   Data preparation to fit *sLFDA* model
+
+```{r}
+Y<-split.data.frame(x = DTI$cca,f = dti_ID) # splitting the data for every subject
+Tij<-split(x=dti_OT,f=dti_ID) # splitting the time for every subject
+```
+
+-   Model fitting ($sLFDA_1$)
+
+```{r}
+#| cache: true
+#| eval: false
+slfda1<-skewedFDA(funDATA=Y,funARG=ss_cca,obsTIME=Tij,ETGrid=tp,DOP=1,KernelF=depan,CV=TRUE,Hgrid=seq(0.04,0.5,0.02),CVThresh = 0.05,PenaltyF=Qpenalty,plfGT=Tg,
+                  ES2knots=c(10,10),ES2bs=c("ps","ps"),ES2m=c(2,2),ES2Esp="REML",
+                  LPknots=c(10,10),LPbs=c("ps","ps"),LPm=c(2,2),
+                  Cov2nbasis=c(10,10),PVE=c(0.95,0.90),
+                  Prediction=TRUE,PSid=unique(dti_ID),PredGS=NULL,PredGT=Tij,
+                  parCOMP = TRUE,n_cores = 6,fast_bps = FALSE,par_seed = 100)
+```
+
+
+```{r}
+#| echo: false
+#| eval: false
+save(slfda1,file="DTI_RESULTS/slfda1.RData")
+```
+
+```{r}
+#| echo: false
+load(file="DTI_RESULTS/slfda1.RData")
+```
+
+-   Figure 1 used in the manuscript
+
+```{r}
+pID<-c(22,34,91) # tract locations will be plotted  
+g1<-as.data.frame(DTI$cca) %>%
+  mutate(ID=ms_meta$ID,
+         Time=ms_meta$ObsTime) %>%
+  group_by(ID) %>%
+  mutate(Visit=as.factor(row_number())) %>%
+  ungroup() %>%
+  pivot_longer(cols = starts_with("cca_"),names_to = "CCA",values_to = "FA",names_prefix = "cca_") %>%
+  mutate(CCA=as.numeric(CCA)) %>%
+  filter(ID%in%pID) %>%
+  mutate(textP=45,
+         SubText=ifelse(ID==pID[1],paste("Visit times (years): ",paste(round(ms_meta$ObsTime[ms_meta$ID==pID[1]],2),sep="",collapse=", "),".",sep =""),
+                        ifelse(ID==pID[2],paste("Visit times (years): ",paste(round(ms_meta$ObsTime[ms_meta$ID==pID[2]],2),sep="",collapse=", "),".",sep =""),paste("Visit times (years): ",paste(round(ms_meta$ObsTime[ms_meta$ID==pID[3]],2),sep="",collapse=", "),".",sep ="")))) %>%
+  mutate(ID=factor(recode(ID,
+                          "22"="paste(Subject~ID:~22)",
+                          "34"="paste(Subject~ID:~34)",
+                          "91"="paste(Subject~ID:~91)"),
+                   levels=c("paste(Subject~ID:~22)",
+                            "paste(Subject~ID:~34)",
+                            "paste(Subject~ID:~91)"))) %>%
+  ggplot(aes(x=CCA,y=FA,group=Visit,color=Visit))+
+  geom_point(aes(shape=Visit),size=3)+
+  facet_wrap(~ID,labeller = label_parsed)+
+  theme(legend.position = "",legend.text = element_text(size=10),legend.title = element_text(size=10),title = element_text(size=10))+
+  ylab("FA along CCA")+
+  xlab("Locations along CCA") +
+  scale_shape_identity() +
+  geom_text(aes(x=textP,y=0.74,label=SubText),col="antiquewhite4",size=4) +
+  ggtitle("(a) Fractional Anisotropy along CCA of brain")
+
+slfda_prd<-predict_slfda(fitOBJ=slfda1,PSid=unique(ms_meta$ID),PredGS=NULL,PredGT=split(rep(1,length(unique(ms_meta$ID))),unique(ms_meta$ID)), CovDep=FALSE,DesignMat=NULL,PredDesignMat = NULL)
+
+cbbPalette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+clr<-cbbPalette[c(2,6)]
+
+cc60est<-as.numeric(slfda1$EstParam %>% filter(Space==ss_cca[60] & Time==0))
+
+cpar<-c(cc60est[1]+(cc60est[2]*45.07),exp(cc60est[3]),as.numeric(dp2cp(c(0,1,cc60est[4]),family="SN")[3]))
+
+cca_loc<-c(30,50,75)
+
+prd_base<-data.frame("ID"=rep(unique(ms_meta$ID),each=3),
+                     "Time"=0,
+                     "Visit"=as.factor(1),
+                     "CCA"=factor(rep(c(paste("CCA location is",cca_loc[1],"at baseline"),
+                             paste("CCA location is",cca_loc[2],"at baseline"),
+                             paste("CCA location is",cca_loc[3],"at the end of year 1")),times=length(unique(ms_meta$ID))),levels=c(paste("CCA location is",cca_loc[1],"at baseline"),
+                             paste("CCA location is",cca_loc[2],"at baseline"),
+                             paste("CCA location is",cca_loc[3],"at the end of year 1"))),
+                     "FA"=as.numeric(sapply(unique(ms_meta$ID),function(u){c(slfda1$PredFD[[u]][1,cca_loc[1:2]],slfda_prd[[u]][1,cca_loc[3]])})),
+                     "Type"="Predicted")
+
+g2<-as.data.frame(DTI$cca) %>%
+  mutate(ID=c(ms_meta$ID),
+         Time=c(ms_meta$ObsTime)) %>%
+  group_by(ID) %>%
+  mutate(Visit=as.factor(row_number())) %>%
+  ungroup() %>% 
+  pivot_longer(cols = starts_with("cca_"),names_to = "CCA",values_to = "FA",names_prefix = "cca_") %>%
+  mutate(CCA=as.numeric(CCA)) %>%
+  filter(CCA%in%c(cca_loc[1:2]) & Time==0) %>%
+  mutate(CCA=factor(ifelse(CCA==cca_loc[1],paste("CCA location is",cca_loc[1],"at baseline"),
+                           ifelse(CCA==cca_loc[2],paste("CCA location is",cca_loc[2],"at baseline"),paste("CCA location is",cca_loc[3],"at the end of year 1"))),
+                    levels=c(paste("CCA location is",cca_loc[1],"at baseline"),
+                             paste("CCA location is",cca_loc[2],"at baseline"),
+                             paste("CCA location is",cca_loc[3],"at the end of year 1"))),
+         Type="Observed") %>%
+  add_case(prd_base) %>%
+  ggplot(aes(FA,group=Type)) +
+  geom_density(aes(linetype=Type)) +
+  facet_wrap(~CCA) +
+  xlab("Fractional Anisotropy") +
+  ylab("")+
+  theme(legend.position = "top",legend.text = element_text(size=10),legend.title = element_blank(),title = element_text(size=10)) +
+  scale_color_manual(labels=c("Observed","Predicted"),values=clr)+
+  ggtitle("(b) Marginal Distribution of Fractional Anisotropy") +
+  scale_linetype_manual(c("Observed,Predicted"),values=c("dashed","solid"))
+grid.arrange(g1,g2,nrow=2)
+```
+
+- Pointwise asymmetry test with unequal and equal sized bins.
+
+```{r}
+#| warning: false
+#| cache: true
+# Unequal-sized Binning
+time=do.call(c,Tij)
+nbreaks<-quantile(time[time>0],probs = seq(0,1,0.12))
+nbreaks[c(1,length(nbreaks))]<-c(min(time[time>0])-1e-5,1)
+nbreaks<-c(0,nbreaks)
+# Asymmetry test
+set.seed(130)
+asym_test_res<-lfd_asym_test(n_breaks=nbreaks,data=do.call(rbind,Y),time=do.call(c,Tij),alpha = 0.05,boot_ss = 100)
+
+# Forming a data for constructing a heatmap
+ms_dti<-yDTI
+if(length(nbreaks)>1){
+  bin_bound<-nbreaks
+  bin_mp<-as.numeric(round((bin_bound[1:(length(bin_bound)-1)]+bin_bound[2:length(bin_bound)])/2,2))
+  bin_mp[1]<-0
+} else{
+  bin_bound<-round(seq(0,1,length.out=nbreaks+1),2)
+  bin_mp<-round(((bin_bound[1:(nbreaks)]+bin_bound[2:(nbreaks+1)])/2)*max(ms_meta$ObsTime),2)
+}
+
+asym_dataU<-data.frame(funARG=rep(seq_len(ncol(ms_dti)),each=length(bin_mp)),
+                        Bins=rep(bin_mp*max(ms_meta$ObsTime),times=ncol(ms_dti)),
+                      BinW=rep(as.numeric((bin_bound[2:length(bin_bound)]-bin_bound[1:(length(bin_bound)-1)]))*max(ms_meta$ObsTime),times=ncol(ms_dti)),
+                      Pvalue=as.numeric(asym_test_res$pValue),
+                      BinType="Unequal sized bins")
+# Heatmap of p-value
+unE_heat<-asym_dataU %>%
+  mutate(SignF=as.factor(as.numeric(Pvalue<asym_test_res$Correct_Alpha))) %>%
+  ggplot(aes(x=funARG,y=Bins,fill=Pvalue))+
+  geom_tile(aes(height=BinW)) +
+  geom_text(aes(label=ifelse(SignF==1,"*",NA))) +  
+  scale_fill_distiller(palette = "YlOrRd") +
+  scale_y_continuous(breaks=round(bin_mp*max(ms_meta$ObsTime),2),labels = round(bin_mp*max(ms_meta$ObsTime),2),sec.axis = sec_axis(trans = ~.*1,breaks = round(bin_mp*max(ms_meta$ObsTime),2),labels = asym_test_res$nBin,name = "Bin specific sample size")) +
+  ylab("") +
+  xlab("Locations along CCA") +
+  labs(fill="P-value") +
+  ggtitle("Unequal sized bins.") +
+  theme(title = element_text(size=10),legend.text = element_text(size=8))
+```
+
+```{r}
+#| warning: false
+#| cache: true
+# Equal-sized Binning and Asymmetry test together
+nbreaks<-8
+set.seed(130)
+asym_test_res<-lfd_asym_test(n_breaks=nbreaks,data=do.call(rbind,Y),time=do.call(c,Tij),alpha = 0.05,boot_ss = 100)
+
+# Forming a data for constructing a heatmap
+if(length(nbreaks)>1){
+  bin_bound<-nbreaks
+  bin_mp<-as.numeric(round((bin_bound[1:(length(bin_bound)-1)]+bin_bound[2:length(bin_bound)])/2,2))
+  bin_mp[1]<-0
+} else{
+  bin_bound<-round(seq(0,1,length.out=nbreaks+1),2)
+  bin_mp<-round(((bin_bound[1:(nbreaks)]+bin_bound[2:(nbreaks+1)])/2),2)
+}
+
+asym_dataE<-data.frame(funARG=rep(seq_len(ncol(ms_dti)),each=length(bin_mp)),
+                        Bins=rep(bin_mp*max(ms_meta$ObsTime),times=ncol(ms_dti)),
+                      BinW=rep(as.numeric((bin_bound[2:length(bin_bound)]-bin_bound[1:(length(bin_bound)-1)]))*max(ms_meta$ObsTime),times=ncol(ms_dti)),
+                      Pvalue=as.numeric(asym_test_res$pValue),
+                      BinType="Equal sized bins")
+# Heatmap of p-value with equal-sized bins
+E_heat<-asym_dataE %>%
+  mutate(SignF=as.factor(as.numeric(Pvalue<asym_test_res$Correct_Alpha))) %>%
+  ggplot(aes(x=funARG,y=Bins,fill=Pvalue))+
+  geom_tile(aes(height=BinW)) +
+  geom_text(aes(label=ifelse(SignF==1,"*",NA))) +  
+  scale_fill_distiller(palette = "YlOrRd") +
+  scale_y_continuous(breaks=round(bin_mp*max(ms_meta$ObsTime),2),labels = round(bin_mp*max(ms_meta$ObsTime),2),sec.axis = sec_axis(trans = ~.*1,breaks = round(bin_mp*max(ms_meta$ObsTime),2),labels = asym_test_res$nBin)) +
+  ylab("Visit time (in years)") +
+  xlab("Locations along CCA") +
+  labs(fill="P-value") +
+  ggtitle("Equal sized bins.") +
+  theme(title = element_text(size=10),legend.text = element_text(size=8),legend.position = "")
+```
+
+```{r}
+#| warning: false
+#| results: hide
+ggarrange(E_heat,unE_heat,ncol=2,widths = c(0.5,0.6))
+ggsave("DTI_RESULTS/pval_heatmap_refund_dti.png",width = 12, units="in")
+```
+<!-- !["P-values associated with pointwise asymmetry test for DTI data with equal and unequal-sized bins. Asterisks indicate of significant skewness. A type-I error rate of $5\%$ is ensured by the Bonferroni correction for multiple testing."](DTI_RESULTS/pval_heatmap_refund_dti.png) -->
+
+
+-   Next, we present the estimated mean and standard deviation functions
+
+```{r}
+pop_mean<-do.call(cbind,split(slfda1$EstParam$X1,slfda1$EstParam$Space))
+colnames(pop_mean)<-ss_cca*93
+rownames(pop_mean)<-round(Tg*max(ms_meta$ObsTime),2)
+m3d<-plotly::plot_ly(y=round(Tg*max(ms_meta$ObsTime),2),x=ss_cca*93,z=pop_mean,type="surface",showscale=FALSE) %>%
+  plotly::layout(title=list(text="(a) Mean function",
+                            x=0.3,
+                            y=0.9),
+                 scene = list(
+      xaxis = list(title = "CCA", showgrid = T,showline = TRUE, mirror = TRUE, linecolor = 'black',autorange="reversed"),
+      yaxis = list(title = "Visit time", showgrid = T,showline = TRUE, mirror = TRUE, linecolor = 'black',autorange="reversed"),
+      zaxis = list(title = "", showgrid = T,showline = TRUE, mirror = TRUE, linecolor = 'black',nticks=8,range=c(0.30,0.70)),
+      legend = list(orientation = "v",   # show entries horizontally
+                    xanchor = "right",  # use center of legend as anchor
+                    x = 0.5)
+      
+    )) 
+```
+
+```{r}
+pop_scale<-do.call(cbind,split(exp(slfda1$EstParam$X2),slfda1$EstParam$Space))
+colnames(pop_scale)<-ss_cca*93
+rownames(pop_scale)<-round(Tg*max(ms_meta$ObsTime),2)
+s3d<-plotly::plot_ly(y=round(Tg*max(ms_meta$ObsTime),2),x=ss_cca*93,z=pop_scale,type="surface",showscale=F) %>%
+  plotly::layout(title=list(text="(c) Standard deviation function",x=0.3,y=0.8),
+    scene = list(
+      xaxis = list(title = "CCA", showgrid = T,showline = TRUE, mirror = TRUE, linecolor = 'black',autorange="reversed"),
+      yaxis = list(title = "Visit time", showgrid = T,showline = TRUE, mirror = TRUE, linecolor = 'black',autorange="reversed"),
+      zaxis = list(title = "", showgrid = T,showline = TRUE, mirror = TRUE, linecolor = 'black',nticks=8),
+      legend = list(orientation = "v",   # show entries horizontally
+                    xanchor = "right",  # use center of legend as anchor
+                    x = 0.5)
+      
+    )) 
+```
+
+```{r}
+m3d<-plotly::plot_ly(y=round(Tg*max(ms_meta$ObsTime),2),x=ss_cca*93,z=pop_mean, scene='scene') %>% add_surface(showscale=FALSE)
+
+s3d<-plotly::plot_ly(y=round(Tg*max(ms_meta$ObsTime),2),x=ss_cca*93,z=pop_scale,scene='scene4') %>% add_surface(showscale=FALSE)
+```
+
+```{r}
+#| eval: false
+#| results: hide
+#| warning: false
+f1 <- list(
+  family = "Arial, sans-serif",
+  size = 16,
+  color = "black")
+f2 <- list(
+  family = "Arial, sans-serif",
+  size = 12,
+  color = "black")
+
+f3 <- list(
+  family = "Arial, sans-serif",
+  size = 12,
+  color = "black")
+
+subplot(m3d,s3d) %>%
+  layout(scene=list(domain=list(x=c(0,0.5),y=c(0,1)),
+      xaxis = list(title = "CCA", showgrid = T,showline = TRUE, mirror = TRUE, linecolor = 'black',autorange="reversed",font=f2),
+      yaxis = list(title = "Visit time", showgrid = T,showline = TRUE, mirror = TRUE, linecolor = 'black',autorange="reversed",font=f2),
+      zaxis = list(title = "", showgrid = T,showline = TRUE, mirror = TRUE, linecolor = 'black',nticks=10)),
+    scene4=list(domain=list(x=c(0.5,1),y=c(0,1)),
+      xaxis = list(title = "CCA", showgrid = T,showline = TRUE, mirror = TRUE, linecolor = 'black',autorange="reversed",font=f2),
+      yaxis = list(title = "Visit time", showgrid = T,showline = TRUE, mirror = TRUE, linecolor = 'black',autorange="reversed",font=f2),
+      zaxis = list(title = "", showgrid = T,showline = TRUE, mirror = TRUE, linecolor = 'black',nticks=8)),
+    annotations=list(list(x=0.2,
+                          y=0.9,
+                          text="(a) Mean function",
+                          font=f1),
+                     list(x=0.7,
+                          y=0.9,
+                          text="(b) Standard deviation function",
+                          font=f1)))
+```
+
+!["Estimated mean and standard deviation surfaces"](DTI_RESULTS/mean_sd_surface_refund_dti.png)
+
+-   For shape function, we estimate the bootstrap simultaneous confidence interval. The bootstrap by subject is implemented for pointwise standard errors. Then we utilized the estimated bootstrap standard errors [@park2018simple] to obtain a simultaneous confidence interval following @degras2017simultaneous.
+
+```{r}
+bootDAT<-read.table("DTI_RESULTS/boot_alpha_dti_refund.txt",header = TRUE)
+boot_dat<-bootDAT %>%
+  select(V1:V93,V96) %>%
+  pivot_longer(V1:V93,values_to = "Alpha",names_to = "CCA",names_prefix = "V") %>%
+  mutate(CCA=as.numeric(CCA),
+         Seed=V96) %>%
+  mutate(EAlpha=rep(do.call(cbind,split(slfda1$EstParam$X3,slfda1$EstParam$Space))[1,],times=100)) %>%
+  mutate(DAlpha=Alpha-EAlpha)
+
+## Bootstrap covariance
+boot_alpha<-do.call(cbind,split(boot_dat$DAlpha,boot_dat$CCA))
+alpha_bcov<-(1/100)*(t(boot_alpha)%*%boot_alpha)
+alpha_var<-diag(alpha_bcov)
+alpha_corr<-cov2cor(alpha_bcov)
+
+## Supremum for simultaneous confidence interval
+sup_sam<-1000
+zsup_alpha<-as.numeric(quantile(sapply(1:sup_sam,function(u){
+  max(mvrnorm(n=1,mu=rep(0,length(ss_cca)),Sigma = alpha_corr))
+}),0.975))
+```
+
+
+```{r}
+slfda1$EstParam %>%
+  set_names("Mean","LogScale","Alpha","CCA","Time") %>%
+  mutate(AlphaSD=rep(sqrt(alpha_var),each=length(Tg)),
+         ZsupAlpha=zsup_alpha) %>%
+    mutate(AlphaLB=Alpha-(ZsupAlpha*AlphaSD),
+           AlphaUB=Alpha+(ZsupAlpha*AlphaSD)) %>%
+  filter(Time==0) %>%
+  select("Time","CCA","Alpha","AlphaSD","AlphaLB","AlphaUB") %>%  
+  set_names(c("Time","CCA","FunV","SD","Lower","Upper")) %>%
+  pivot_longer(c("FunV","Lower","Upper"),names_to = "Type",values_to = "Estimate") %>%
+  mutate(LineType=as.factor(recode(Type,
+                               "FunV"=" Estimate",
+                               "Lower"="95% simultaneous confidence band",
+                               "Upper"="95% simultaneous confidence band"))) %>%
+  ggplot(aes(x=CCA,y=Estimate,group=Type)) + 
+  geom_line(aes(linetype=LineType),linewidth=1) +
+  ylab("")+
+  scale_y_continuous(position = "left")+
+  scale_linetype_manual(c("Estimate","95% simultaneous confidence band"),values = c("solid","dotdash"))+
+  geom_hline(yintercept = 0,linetype="dotted")+
+  theme(legend.position = "top",legend.title = element_blank()) +
+  ggtitle("Estimated shape function with 95% simulataneous confidence interval.")
+```
+- Prediction by the LFDA, function from *sLFDA* is used to perform the analysis 
+
+```{r}
+#| eval: false
+lfda<-fpcaLFDA(Y = do.call(rbind,Y), subject.index = ms_meta$ID,
+                   visit.index = do.call(c,lapply(1:length(Y), function(i){1:length(Tij[[i]])})), obsT = do.call(c,Tij),
+                   funcArg = ss_cca,numTEvalPoints = 100,fbps.knots = c(15,10), fbps.p = 3, fbps.m = 2,
+                   LongiModel.method='fpca.sc',
+                   mFPCA.pve = 0.95, mFPCA.knots = 15, mFPCA.p = 3, mFPCA.m = 2, 
+                   sFPCA.pve = 0.90, sFPCA.nbasis = 10)   
+  
+  
+```
+
+```{r}
+#| echo: false
+#| eval: false
+save(lfda,file="DTI_RESULTS/lfda.RData")
+```
+
+```{r}
+#| echo: false
+load(file="DTI_RESULTS/lfda.RData")
+```
+
+
+
+- We demonstrate prediction and quantile trajectory estimation altogether in the context of MS patients. 
+
+```{r}
+sfID<-c(16,69)
+SMPredT<-as.numeric((sapply(sfID,function(w){c(Tij[[w]][-1],max(Tij[[w]]))*max(ms_meta$ObsTime)+c(0,0,0,180/365)}))/max(ms_meta$ObsTime))
+pgT<-split(SMPredT,rep(sfID,each=4))
+
+slfda1prd<-predict_slfda(fitOBJ=slfda1,PSid=sfID,PredGS=NULL,PredGT=list(pgT[[2]],pgT[[1]]),CovDep=FALSE,DesignMat=NULL,PredDesignMat = NULL)
+  
+#save(slfda1osp,file="slfda1osp.RData")
+```
+
+- Prediction via LFDA
+
+```{r}
+#| eval: false
+LPREV<-predict_lfda(lfdaOBJ = lfda,gridT = Tij,gTID=unique(ms_meta$ID))  
+```
+
+```{r}
+#| echo: false
+#| eval: false
+save(LPREV,file="DTI_RESULTS/LPREV.RData")
+```
+
+```{r}
+#| echo: false
+load(file="DTI_RESULTS/LPREV.RData")
+```
+
+```{r}
+lfda_prd<-predict_lfda(lfdaOBJ = lfda,gridT = list(pgT[[2]],pgT[[1]]),gTID=sfID)  
+```
+
+- Estimation of the quantile trajectory
+
+```{r}
+qst<-do.call(rbind,quantile_slfda(fitOBJ=slfda1,Time = SMPredT,QLevel = c(0.25),
+               CovDep=FALSE,NewDesignMat=NULL))
+```
+
+
+- Figure 3 in the original manuscript
+
+```{r}
+obsDAT<-data.frame(do.call(rbind,lapply(sfID, function(w){
+  cbind(w,1:length(Tij[[w]]),Tij[[w]]*max(ms_meta$ObsTime),Y[[w]])
+}))) %>%
+  set_names(c("ID","Visit","Time",paste("cc",round(ss_cca,2),sep=""))) %>%
+  mutate(Type="Observed")
+# Fitted data by slfda
+SobsDAT<-data.frame(do.call(rbind,lapply(sfID, function(w){
+  cbind(w,1:length(Tij[[w]]),Tij[[w]]*max(ms_meta$ObsTime),
+        slfda1$PredFD[[w]])
+}))) %>%
+  set_names(c("ID","Visit","Time",paste("cc",round(ss_cca,2),sep=""))) %>%
+  mutate(Type="Observed")
+
+# Fitted data by lfda
+
+SobsDAT_lfda<-data.frame(do.call(rbind,lapply(sfID, function(w){
+  cbind(w,1:length(Tij[[w]]),Tij[[w]]*max(ms_meta$ObsTime),
+        LPREV$PredFD[[w]])
+}))) %>%
+  set_names(c("ID","Visit","Time",paste("cc",round(ss_cca,2),sep=""))) %>%
+  mutate(Type="ObservedL")
+
+#######
+SMPredT<-as.numeric((sapply(sfID,function(w){c(Tij[[w]][-1],max(Tij[[w]]))*max(ms_meta$ObsTime)+c(0,0,0,180/365)}))/max(ms_meta$ObsTime))
+SMVisit<-as.numeric(sapply(sfID, function(w){c(2:nrow(Y[[w]]),nrow(Y[[w]])+1)}))
+Q05SM<-data.frame(cbind(rep(sfID,each=4),SMVisit,SMPredT*max(ms_meta$ObsTime),qst)) %>% 
+  set_names(c("ID","Visit","Time",paste("cc",round(ss_cca,2),sep=""))) %>%
+  mutate(Type="Quantile")
+
+SMPredT<-(sapply(sfID,function(w){max(Tij[[w]])*max(ms_meta$ObsTime)})+180/365)/max(ms_meta$ObsTime)
+SMVisit<-sapply(sfID, function(w){nrow(Y[[w]])+1})
+
+## Prediction by slfda
+prdDAT<-data.frame(cbind(sfID,SMVisit,SMPredT*max(ms_meta$ObsTime),rbind(slfda1prd[[1]][4,],slfda1prd[[2]][4,])))%>% 
+  set_names(c("ID","Visit","Time",paste("cc",round(ss_cca,2),sep=""))) %>%
+  mutate(Type="Predicted") 
+
+## prediction by lfda
+prdDAT_lfda<-data.frame(cbind(sfID,SMVisit,SMPredT*max(ms_meta$ObsTime),rbind(lfda_prd$PredFD[[1]][4,],lfda_prd$PredFD[[2]][4,])))%>% 
+  set_names(c("ID","Visit","Time",paste("cc",round(ss_cca,2),sep=""))) %>%
+  mutate(Type="PredictedL") 
+
+
+ObsD<-obsDAT %>%
+  pivot_longer(4:96,names_to = "CCA",values_to = "FA",names_prefix = "cc") %>%
+  mutate(CCA=as.numeric(CCA))
+
+#cbind(sapply(Tij,length),sapply(Tij,max))
+
+SobsDAT %>% 
+  add_case(SobsDAT_lfda) %>%
+  subset(Visit>1) %>%
+  add_case(prdDAT) %>%
+  add_case(prdDAT_lfda) %>%
+  add_case(Q05SM) %>%
+  pivot_longer(4:96,names_to = "CCA",values_to = "FA",names_prefix = "cc") %>%
+  mutate(CCA=as.numeric(CCA),OFA=c(ObsD$FA[ObsD$Visit>1],rep(NA,18*93))) %>%
+  mutate(TextP=46,TimeM=paste("Visit Time: ",round(Time,2)," years",sep="")) %>%
+  mutate(TimeMF=ifelse(TimeM=="Visit Time: 1.85 years"|TimeM=="Visit Time: 2.62 years","6 months prediction since the last visit",TimeM)) %>%
+  mutate(nID=ID,
+         CCA=CCA*93,
+         Qlevel=rep(1:24,each=93),
+         ID=recode(ID,
+                   "16"="paste(Subject~ID:~16)",
+                   "69"="paste(Subject~ID:~69)"),
+         LType=ifelse(Type=="Quantile","2","1"),
+         Visit=factor(recode(Visit,
+                             "2"="paste(Observed:~2^nd~Visit)",
+                             "3"="paste(Observed:~3^rd~Visit)",
+                             "4"="paste(Observed:~4^th~Visit)",
+                             "5"="paste(Predicted:~5^th~Visit)"),
+                      levels=c("paste(Observed:~2^nd~Visit)","paste(Observed:~3^rd~Visit)","paste(Observed:~4^th~Visit)","paste(Predicted:~5^th~Visit)"))) %>%
+  ggplot(aes(x=CCA,y=FA,color=Type)) +
+  geom_line(aes(linetype=LType),linewidth=0.8) +
+  geom_point(aes(x=CCA,y=OFA,color="gray35"),size=0.8,na.rm = TRUE)+
+  ylab("Fractional Anisotropy")+
+  ylim(0.25,0.75) +
+  facet_grid(vars(ID),vars(Visit),labeller = label_parsed)+
+  scale_color_manual(values=c("gray35","cadetblue","#D55E02","cadetblue","#D55E02","red"),labels=c(expression(Y[i](s,t[ij])),expression(hat(Y)[i](s,t[im[i]]+ 6*" Months")),expression(hat(q)[0.05](t[im[i]]+ 6*" Months"))))+
+  theme(legend.title = element_blank(),legend.position = "")+
+  geom_text(aes(x=TextP,y=0.70,label=TimeM),col="antiquewhite4",size=4) +
+  theme(strip.text.x = element_blank(),
+        axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10))
+```
