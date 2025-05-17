@@ -1,6 +1,8 @@
 Package: supFTSVDJM
 Title: What the Package Does (One Line, Title Case)
 Version: 0.0.0.9000
+Depends: Matrix, rsvd, matrixcalc, mvtnorm, sn, mgcv, refund, fda, fdapace, foreach, doParallel, doRNG, survival, supFTSVD
+Imports: base, rsvd, Matrix, matrixcalc, mvtnorm, sn, mgcv, refund, fda, fdapace, Rdpack, foreach, doParallel, doRNG, survival, supFTSVD
 Authors@R: 
     person("Samsul", "Alam", , "first.last@example.com", role = c("aut", "cre"),
            comment = c(ORCID = "YOUR-ORCID-ID"))

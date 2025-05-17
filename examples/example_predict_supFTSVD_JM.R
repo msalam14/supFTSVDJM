@@ -1,5 +1,5 @@
 # Number of subjects
-n<-50
+n<-500
 
 # feature dimension
 pdim<-c(200)
@@ -80,11 +80,15 @@ gen_dataCFS<-omics_data_gen_surv(m_i = m_i,Zeta= ZetaSL,obsTIME = tr_obsTIME,
 fit_model<-supFTSVD_JM(datlist = gen_dataCFS$data,
                        response=Vmat, interval = c(0,1), r = model_rank,
                        resolution=50, CVPhi=FALSE, K=5, cvT=5,
-                       smooth=0.001,
+                       smooth=round(exp(seq(-7,5,length.out=20)),3),
                        surv_time=survT,
                        censor_status=cenI,
-                       maxiter=25, epsilon=1e-5,KInd=NULL,rsvd_seed=100,
+                       maxiter=100, epsilon=1e-5,KInd=NULL,rsvd_seed=100,
                        conv_criteria = "cond_lik",
                        survX = Vmat,scale = TRUE,constant_hazard = TRUE)
 
-save(fit_model,file = "data/fit_model.RData")
+
+pred_trj<-predict.supFTSVD_JM(obj = fit_model,
+                              designM = Vmat,mc_ss = 1000,surv_time = survT,
+                              censor_status = cenI,survX = Vmat,
+                              new_dat = gen_dataCFS$data,TimeG = Time)

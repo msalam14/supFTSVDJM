@@ -1,5 +1,5 @@
 # Number of subjects
-n<-50
+n<-500
 
 # feature dimension
 pdim<-c(200)
@@ -67,24 +67,7 @@ cen_indx<-which(survT>1)
 survT[cen_indx]<-1
 cenI[cen_indx]<-1
 
-# training m-omics data
-m_i<-sample(5:10,n,replace = TRUE)
-bl_time<-sapply(survT, function(u){runif(1,0,u)})
-tr_obsTIME<-lapply(1:n, function(i){c(0,sort(runif(m_i[i]-2,0,
-                                                   survT[i])),survT[i])})
-gen_dataCFS<-omics_data_gen_surv(m_i = m_i,Zeta= ZetaSL,obsTIME = tr_obsTIME,
-                                 Xi = bval,PsiF = PhiFunc,sing_val = lmd_val,
-                                 Data_Var = Tau2,surv_time=survT)
-
-
-fit_model<-supFTSVD_JM(datlist = gen_dataCFS$data,
-                       response=Vmat, interval = c(0,1), r = model_rank,
-                       resolution=50, CVPhi=FALSE, K=5, cvT=5,
-                       smooth=0.001,
-                       surv_time=survT,
-                       censor_status=cenI,
-                       maxiter=25, epsilon=1e-5,KInd=NULL,rsvd_seed=100,
-                       conv_criteria = "cond_lik",
-                       survX = Vmat,scale = TRUE,constant_hazard = TRUE)
-
-save(fit_model,file = "data/fit_model.RData")
+fit_coxph<-coxph_mle_fllik(surv_time = survT,censor_status = cenI,
+                           Xmat = cbind(Vmat,ZetaSL),max_iter = 25,
+                           cnv_type = "LL",cnv_crit = 1e-6,
+                           constant_hazard = "FALSE",change_points = NULL)
