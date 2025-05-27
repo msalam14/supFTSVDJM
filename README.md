@@ -1,0 +1,17 @@
+# supFTSVD_JM Vignette
+
+
+# Introduction
+
+This R package is built for implementing supFTSVD-JM proposed for joint
+modeling of high-dimensional longitudinal and time-to-event data. For
+methodological details, we recommend to read Alam and Luo (202x). Note
+that the package is still in developing stage.
+
+# Installation
+
+To install the package, run the following codes
+
+``` r
+devtools::install_github("https://github.com/msalam14/supFTSVD_JM")
+```
