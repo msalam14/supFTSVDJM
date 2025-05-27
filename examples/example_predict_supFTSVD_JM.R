@@ -1,5 +1,5 @@
 # Number of subjects
-n<-500
+n<-50
 
 # feature dimension
 pdim<-c(200)
